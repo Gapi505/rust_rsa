@@ -1,32 +1,144 @@
 extern crate is_prime;
-#[macro_use]
+//#[macro_use]
 extern crate lazy_static;
 use is_prime::*;
-use rand::Rng;
-use std::{mem, str::{FromStr, Chars}};
+use std::str::FromStr;
 use num_bigint::{BigUint,BigInt, ToBigUint, RandBigInt, ToBigInt};
-use num_traits::{One, Zero, cast::ToPrimitive};
+use num_traits::{One, Zero};
 use num_integer::lcm;
 use std::collections::HashMap;
+use dialoguer::{theme::ColorfulTheme, Input, FuzzySelect, Confirm};
+use std::fs::File;
+use std::io::prelude::*;
+use serde_json::json;
 
 
 fn main() {
-    // Generate a key pair
-    let (public,private) = create_key_pair();
-    println!("Public key: {:?}", public);
-    println!("Private key: {:?}", private);
-
-
-    // Encrypt a message
-    let message = "Hello, world! How are you?".to_string();
-    let encrypted_message = encrypt(message, public["e"].clone(), public["n"].clone());
-    println!("Encrypted message: {:?}", encrypted_message);
-
-    // Decrypt the message
-    let decrypted_message = decrypt(encrypted_message, private["d"].clone(), public["n"].clone());
-    println!("Decrypted message: {:?}", decrypted_message);
-    // Check if the decrypted message is the same as the original message
+    app();
 }
+fn app(){
+
+    //gets both keys from json files
+    let mut public_file = File::open("public_key.json").unwrap_or_else(|_| {
+        let (public, _) = create_key_pair(10); // replace 10 with the number of prime digits you want
+        save_key_pair(&public, &HashMap::new()).unwrap(); // replace HashMap::new() with your private key if you have it
+        File::open("public_key.json").unwrap()
+    });
+    let mut public_json = String::new();
+    public_file.read_to_string(&mut public_json).unwrap();
+    let public: HashMap<String, BigUint> = convert_hashmap_sb(&serde_json::from_str(&public_json).unwrap());
+
+    let mut private_file = File::open("private_key.json").unwrap_or_else(|_| {
+        let (_, private) = create_key_pair(10); // replace 10 with the number of prime digits you want
+        save_key_pair(&HashMap::new(), &private).unwrap(); // replace HashMap::new() with your public key if you have it
+        File::open("private_key.json").unwrap()
+    });
+    let mut private_json = String::new();
+    private_file.read_to_string(&mut private_json).unwrap();
+    let private: HashMap<String, BigUint> = convert_hashmap_sb(&serde_json::from_str(&private_json).unwrap());
+
+    let mut passwords_file = File::open("passwords.json").unwrap_or_else(|_| {
+        let passwords: HashMap<String, String> = HashMap::new(); // replace with your passwords if you have them
+        let passwords_json = serde_json::to_string(&passwords).unwrap();
+        let mut passwords_file = File::create("passwords.json").unwrap();
+        passwords_file.write_all(passwords_json.as_bytes()).unwrap();
+        File::open("passwords.json").unwrap()
+    });
+    let mut passwords_json = String::new();
+    passwords_file.read_to_string(&mut passwords_json).unwrap();
+    let mut passwords: HashMap<String, String> = serde_json::from_str(&passwords_json).unwrap();
+
+    let actions = &[
+        "Generate new key pair",
+        "Save password",
+        "Get password",
+    ];
+    let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("What do you want to do?")
+        .default(0)
+        .items(&actions[..])
+        .interact()
+        .unwrap();
+    match selection {
+        0 => {
+            let prime_digits = Input::<u32>::new()
+                .with_prompt("How many digits should the prime numbers have?")
+                .interact()
+                .unwrap();
+            let (public, private) = create_key_pair(prime_digits);
+            println!("Public key: {:?}", public);
+            println!("Private key: {:?}", private);
+            save_key_pair(&public, &private).unwrap();
+
+            // resets passwords
+            passwords = HashMap::new();
+            save_passwords(&passwords).unwrap();
+        },
+        1 => {
+            let name = Input::<String>::new()
+                .with_prompt("What is the name of the password?")
+                .interact()
+                .unwrap();
+            let password = Input::<String>::new()
+                .with_prompt("What is the password?")
+                .interact()
+                .unwrap();
+            passwords.insert(name, encrypt(password, public["e"].clone(), public["n"].clone()));
+            save_passwords(&passwords).unwrap();
+        },
+        2 => {
+            let password_names: Vec<String> = passwords.keys().map(|s| s.to_string()).collect();
+            let name = FuzzySelect::with_theme(&ColorfulTheme::default())
+                .with_prompt("Which password do you want to get?")
+                .default(0)
+                .items(&password_names[..])
+                .interact()
+                .unwrap();
+            let name = password_names[name].clone();
+            let password = decrypt(passwords[&name].clone(), private["d"].clone(), private["n"].clone());
+            println!("Password: {:?}", password);
+        },
+        _ =>{
+            println!("Not implemented yet")
+        }
+    }
+    if Confirm::new()
+        .with_prompt("Do you want to do something else?")
+        .interact()
+        .unwrap()
+    {
+        app();
+    }
+}
+
+fn save_key_pair(public: &HashMap<String, BigUint>, private: &HashMap<String, BigUint>) -> std::io::Result<()> {
+    let public_json = json!(convert_hasmap_bs(public));
+    let private_json = json!(convert_hasmap_bs(private));
+
+    let mut public_file = File::create("public_key.json")?;
+    public_file.write_all(public_json.to_string().as_bytes())?;
+
+    let mut private_file = File::create("private_key.json")?;
+    private_file.write_all(private_json.to_string().as_bytes())?;
+
+    Ok(())
+}
+fn convert_hasmap_bs(hashmap: &HashMap<String, BigUint>) -> HashMap<String, String> {
+    hashmap.iter().map(|(k, v)| (k.clone(), v.to_string())).collect()
+}
+fn convert_hashmap_sb(hashmap: &HashMap<String, String>) -> HashMap<String, BigUint> {
+    hashmap.iter().map(|(k, v)| (k.clone(), BigUint::from_str(v).unwrap())).collect()
+}
+
+fn save_passwords(passwords: &HashMap<String, String>) -> std::io::Result<()> {
+    let passwords_json = json!(passwords);
+
+    let mut passwords_file = File::create("passwords.json")?;
+    passwords_file.write_all(passwords_json.to_string().as_bytes())?;
+
+    Ok(())
+}
+
 fn generate_prime(digits: u32) -> BigUint {
     let mut rng = rand::thread_rng();
     let lower_bound = BigUint::from(10u32).pow(digits - 1);
@@ -38,23 +150,23 @@ fn generate_prime(digits: u32) -> BigUint {
     }
     prime
 }
-fn create_key_pair() -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
+fn create_key_pair(prime_digits: u32) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
     let mut public = HashMap::new();
     let mut private = HashMap::new();
     // Choose two large prime numbers p and q
-    let p = generate_prime(10);
-    let q = generate_prime(10);
+    let p = generate_prime(prime_digits);
+    let q = generate_prime(prime_digits);
 
     // Compute n = pq
     let n = &p * &q;
     public.insert("n".to_string(), n.clone());
+    private.insert("n".to_string(), n.clone());
 
     // Compute λ(n) = lcm(p - 1, q - 1)
     let lambda_n = carmichaels_totient(p.clone(), q.clone());
-    print!("lambda_n: {}\n", lambda_n);
 
     // Choose an integer e such that 2 < e < λ(n) and gcd(e, λ(n)) = 1
-    let e =generate_prime(5); //&*E;
+    let e =generate_prime(6); //&*E;
     public.insert("e".to_string(), e.clone());
 
     // Determine d as d ≡ e−1 (mod λ(n))
@@ -62,32 +174,6 @@ fn create_key_pair() -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
     private.insert("d".to_string(), d.clone());
 
     (public, private)
-}
-fn modular_exponent(mut n: BigUint, mut x: BigUint, p: BigUint) -> BigUint {
-    let mut ans = BigUint::one();
-    if x <= BigUint::zero() { return BigUint::one(); }
-    loop {
-        if x == BigUint::one() { return (ans.clone() * n.clone()) % p.clone(); }
-        if x.clone() & BigUint::one() == BigUint::zero() { 
-            n = (n.clone() * n.clone()) % p.clone(); 
-            x = x >> 1;
-            continue; 
-        } else { 
-            ans = (ans * n.clone()) % p.clone(); 
-            x = x - BigUint::one(); 
-        }
-    }
-}
-
-fn gcd(mut a: BigUint, mut b: BigUint) -> BigUint {
-    if a == b { return a; }
-    if b > a { mem::swap(&mut a, &mut b); }
-    while b > BigUint::zero() { 
-        let temp = a.clone();
-        a = b.clone();
-        b = temp % b;
-    }
-    return a;
 }
 
 fn mod_inverse(a: BigInt, module: BigInt) -> Option<BigInt> {
@@ -141,15 +227,23 @@ fn encrypt_num(m: BigUint, e: BigUint, n: BigUint) -> BigUint {
     modular_exponentiation(m, e, n)
 }
 
-fn encrypt(message: String, e: BigUint, n: BigUint) -> Vec<String> {
-    let mut encrypted_message = Vec::new();
+fn encrypt(message: String, e: BigUint, n: BigUint) -> String {
+    let mut encrypted_message_vec = Vec::new();
+    let mut encrypted_message = String::new();
     let mut chunk = "0".to_string();
-    let mut message = message;
-    let target_length = message.len() + n.clone().to_string().len() - 3;
-    while message.len() < target_length {
-        message.push(' ');
-    }
-    for c in message.chars() {
+
+    for (i,c) in message.chars().enumerate() {
+        if i == message.len() - 1{
+            if (c as u32) < 100 {
+                chunk.push('0');
+            }
+            chunk = chunk + &(c as u32).to_string();
+            let m = &chunk as &str;
+            let m = BigUint::from_str(m).unwrap();
+            chunk = "0".to_string();
+            let c = encrypt_num(m, e.clone(), n.clone());
+            encrypted_message_vec.push(c.to_string());
+        }
         if chunk.len() < n.clone().to_string().len() - 6 {
             if chunk == "0".to_string(){
                 chunk = String::new();
@@ -169,15 +263,19 @@ fn encrypt(message: String, e: BigUint, n: BigUint) -> Vec<String> {
             let m = BigUint::from_str(m).unwrap();
             chunk = "0".to_string();
             let c = encrypt_num(m, e.clone(), n.clone());
-            encrypted_message.push(c.to_string());
+            encrypted_message_vec.push(c.to_string());
         }
+    }
+    for c in encrypted_message_vec {
+        encrypted_message = encrypted_message.clone() + if encrypted_message != "" {" "} else {""} + &c;
     }
     encrypted_message
 }
 
-fn decrypt(encrypted_message: Vec<String>, d: BigUint, n: BigUint) -> String {
+fn decrypt(encrypted_message: String, d: BigUint, n: BigUint) -> String {
     let mut decrypted_message = String::new();
-    for c in encrypted_message {
+    let encrypted_message_vec: Vec<String> = encrypted_message.split(" ").map(|s| s.to_string()).collect();
+    for c in encrypted_message_vec {
         let c = c.parse::<BigUint>().unwrap();
         let m = decrypt_num(c.clone(), d.clone(), n.clone());
         let mut m = m.to_string();

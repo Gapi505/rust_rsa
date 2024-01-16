@@ -12,3 +12,6 @@ num-bigint = { version = "*", features = ["rand"] }
 num-traits = "*"
 lazy_static = "*"
 num-integer = "*"
+console = "*"
+dialoguer = {version ="*", features = ["fuzzy-select"]}
+serde_json = "*"
